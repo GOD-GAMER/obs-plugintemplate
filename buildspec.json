@@ -1,12 +1,12 @@
 {
     "dependencies": {
         "obs-studio": {
-            "version": "31.1.1",
+            "version": "32.0.4",
             "baseUrl": "https://github.com/obsproject/obs-studio/archive/refs/tags",
             "label": "OBS sources",
             "hashes": {
                 "macos": "39751f067bacc13d44b116c5138491b5f1391f91516d3d590d874edd21292291",
-                "windows-x64": "2c8427c10b55ac6d68008df2e9a3e82f4647aaad18f105e30d4713c2de678ccf"
+                "windows-x64": "5e17f2e99213af77ee15c047755ee3e3e88b78e5eee17351c113d79671ffb98b"
             }
         },
         "prebuilt": {
@@ -33,13 +33,13 @@
     },
     "platformConfig": {
         "macos": {
-            "bundleId": "com.example.plugintemplate-for-obs"
+            "bundleId": "com.audiocalibrator.obs-plugin"
         }
     },
-    "name": "plugintemplate-for-obs",
-    "displayName": "Plugin Template for OBS",
+    "name": "obs-audio-calibrator",
+    "displayName": "OBS Audio Calibrator",
     "version": "1.0.0",
-    "author": "Your Name Here",
-    "website": "https://example.com",
-    "email": "me@example.com"
+    "author": "Audio Calibrator",
+    "website": "https://github.com/audiocalibrator/obs-audio-calibrator",
+    "email": "dev@example.com"
 }
