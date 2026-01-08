@@ -56,11 +56,11 @@
         "lhs": "${hostSystemName}",
         "rhs": "Windows"
       },
-      "generator": "Visual Studio 18 2026",
+      "generator": "Visual Studio 17 2022",
       "architecture": {"value": "x64", "strategy": "set"},
       "warnings": {"dev": true, "deprecated": true},
       "cacheVariables": {
-        "CMAKE_SYSTEM_VERSION": "10.0.26100.0",
+        "CMAKE_SYSTEM_VERSION": "10.0.22621.0",
         "Qt6_DIR": "${sourceDir}/.deps/obs-deps-qt6-2025-07-11-x64/lib/cmake/Qt6"
       }
     },

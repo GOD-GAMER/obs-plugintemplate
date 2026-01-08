@@ -38,7 +38,7 @@
     },
     "name": "obs-audio-calibrator",
     "displayName": "OBS Audio Calibrator",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "author": "Audio Calibrator",
     "website": "https://github.com/audiocalibrator/obs-audio-calibrator",
     "email": "dev@example.com"
