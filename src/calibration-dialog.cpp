@@ -15,6 +15,12 @@
 #include <QGridLayout>
 #include <QDialogButtonBox>
 #include <QSpacerItem>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QStandardPaths>
+#include <QDir>
 
 #include <algorithm>
 #include <cmath>
@@ -39,7 +45,8 @@ CalibrationDialog::CalibrationDialog(QWidget *parent)
 {
 	setWindowTitle("Audio Calibration Wizard");
 	setModal(false);
-	setMinimumWidth(740);
+	setMinimumWidth(520);
+	setMaximumHeight(400);
 
 	currentStep = 0;
 	isRecording = false;
@@ -65,6 +72,9 @@ CalibrationDialog::CalibrationDialog(QWidget *parent)
 
 	recordingTimer = new QTimer(this);
 	connect(recordingTimer, &QTimer::timeout, this, &CalibrationDialog::onRecordingTick);
+
+	// Load any saved calibration data
+	loadCalibrationData();
 }
 
 CalibrationDialog::~CalibrationDialog()
@@ -76,89 +86,123 @@ CalibrationDialog::~CalibrationDialog()
 void CalibrationDialog::setupUI()
 {
 	auto *mainLayout = new QVBoxLayout(this);
-	mainLayout->setSpacing(12);
+	mainLayout->setSpacing(6);
+	mainLayout->setContentsMargins(8, 8, 8, 8);
 
-	// Title
-	titleLabel = new QLabel("Professional Audio Calibration");
-	titleLabel->setObjectName("titleLabel");
-	mainLayout->addWidget(titleLabel);
+	// Source + Start row (compact top bar)
+	auto *topRow = new QHBoxLayout();
+	topRow->addWidget(new QLabel("Source:"));
+	sourceCombo = new QComboBox(this);
+	sourceCombo->setMinimumWidth(180);
+	connect(sourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &CalibrationDialog::onSourceChanged);
+	topRow->addWidget(sourceCombo);
+	topRow->addSpacing(10);
+	startButton = new QPushButton("Start");
+	connect(startButton, &QPushButton::clicked, this, &CalibrationDialog::onStartClicked);
+	topRow->addWidget(startButton);
+	topRow->addStretch();
+	mainLayout->addLayout(topRow);
 
-	instructionLabel = new QLabel("Select your microphone/audio source, then start calibration.");
-	instructionLabel->setWordWrap(true);
-	mainLayout->addWidget(instructionLabel);
-
-	// Recording frame (top + prominent)
+	// Recording frame (compact)
 	recordingFrame = new QFrame(this);
 	recordingFrame->setObjectName("recordingFrame");
 	auto *recordLayout = new QVBoxLayout(recordingFrame);
-	recordLayout->setSpacing(8);
+	recordLayout->setSpacing(4);
+	recordLayout->setContentsMargins(8, 6, 8, 6);
 
 	auto *recordTopRow = new QHBoxLayout();
 	stepIndicatorLabel = new QLabel("Step: — / 8");
 	stepIndicatorLabel->setObjectName("stepIndicator");
 	recordTopRow->addWidget(stepIndicatorLabel);
 	recordTopRow->addStretch();
-
+	countdownLabel = new QLabel("");
+	recordTopRow->addWidget(countdownLabel);
+	recordTopRow->addSpacing(10);
 	recordButton = new QPushButton("Record");
 	recordButton->setEnabled(false);
-	recordButton->setMinimumHeight(36);
+	recordButton->setMinimumWidth(80);
 	connect(recordButton, &QPushButton::clicked, this, &CalibrationDialog::onRecordClicked);
 	recordTopRow->addWidget(recordButton);
-
 	recordLayout->addLayout(recordTopRow);
 
-	promptLabel = new QLabel("Press Start to begin.");
+	promptLabel = new QLabel("Select source and click Start.");
 	promptLabel->setWordWrap(true);
 	promptLabel->setObjectName("promptLabel");
 	recordLayout->addWidget(promptLabel);
 
-	countdownLabel = new QLabel(" ");
-	recordLayout->addWidget(countdownLabel);
-
 	recordingProgress = new QProgressBar(this);
 	recordingProgress->setRange(0, RECORDING_DURATION_MS);
 	recordingProgress->setValue(0);
+	recordingProgress->setMaximumHeight(12);
 	recordLayout->addWidget(recordingProgress);
 
 	mainLayout->addWidget(recordingFrame);
 
-	// Source selection
-	auto *sourceRow = new QHBoxLayout();
-	sourceRow->addWidget(new QLabel("Audio source:"));
-	sourceCombo = new QComboBox(this);
-	connect(sourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &CalibrationDialog::onSourceChanged);
-	sourceRow->addWidget(sourceCombo, 1);
-	mainLayout->addLayout(sourceRow);
-
-	// Meters
-	meterGroup = new QGroupBox("Live Levels", this);
-	auto *meterLayout = new QGridLayout(meterGroup);
-
+	// Live meters (single compact row)
+	auto *meterRow = new QHBoxLayout();
+	meterRow->addWidget(new QLabel("RMS:"));
 	levelMeter = new QProgressBar(this);
 	levelMeter->setRange(0, 100);
 	levelMeter->setTextVisible(false);
+	levelMeter->setMaximumHeight(14);
+	meterRow->addWidget(levelMeter, 1);
+	rmsLabel = new QLabel("-∞");
+	rmsLabel->setMinimumWidth(50);
+	meterRow->addWidget(rmsLabel);
+	meterRow->addSpacing(10);
+	meterRow->addWidget(new QLabel("Peak:"));
 	peakMeter = new QProgressBar(this);
 	peakMeter->setRange(0, 100);
 	peakMeter->setTextVisible(false);
+	peakMeter->setMaximumHeight(14);
+	meterRow->addWidget(peakMeter, 1);
+	peakLabel = new QLabel("-∞");
+	peakLabel->setMinimumWidth(50);
+	meterRow->addWidget(peakLabel);
+	mainLayout->addLayout(meterRow);
 
-	rmsLabel = new QLabel("RMS: -∞ dB");
-	peakLabel = new QLabel("Peak: -∞ dB");
+	// Results (compact 2-column grid)
+	resultsGroup = new QGroupBox("Results", this);
+	auto *resultsLayout = new QGridLayout(resultsGroup);
+	resultsLayout->setSpacing(2);
+	resultsLayout->setContentsMargins(6, 4, 6, 4);
 
-	meterLayout->addWidget(new QLabel("RMS"), 0, 0);
-	meterLayout->addWidget(levelMeter, 0, 1);
-	meterLayout->addWidget(rmsLabel, 0, 2);
-	meterLayout->addWidget(new QLabel("Peak"), 1, 0);
-	meterLayout->addWidget(peakMeter, 1, 1);
-	meterLayout->addWidget(peakLabel, 1, 2);
+	auto makeResultLabel = [this](const QString &text) {
+		auto *label = new QLabel(text, this);
+		return label;
+	};
 
-	mainLayout->addWidget(meterGroup);
+	step1Result = makeResultLabel("1) —");
+	step2Result = makeResultLabel("2) —");
+	step3Result = makeResultLabel("3) —");
+	step4Result = makeResultLabel("4) —");
+	step5Result = makeResultLabel("5) —");
+	step6Result = makeResultLabel("6) —");
+	step7Result = makeResultLabel("7) —");
+	step8Result = makeResultLabel("8) —");
+	rangeResult = makeResultLabel("Range: —");
+	avgResult = makeResultLabel("Avg: —");
 
-	// Filters
-	basicFiltersGroup = new QGroupBox("Filters (Basic)", this);
-	auto *basicLayout = new QGridLayout(basicFiltersGroup);
+	resultsLayout->addWidget(step1Result, 0, 0);
+	resultsLayout->addWidget(step2Result, 0, 1);
+	resultsLayout->addWidget(step3Result, 0, 2);
+	resultsLayout->addWidget(step4Result, 0, 3);
+	resultsLayout->addWidget(step5Result, 1, 0);
+	resultsLayout->addWidget(step6Result, 1, 1);
+	resultsLayout->addWidget(step7Result, 1, 2);
+	resultsLayout->addWidget(step8Result, 1, 3);
+	resultsLayout->addWidget(rangeResult, 2, 0, 1, 2);
+	resultsLayout->addWidget(avgResult, 2, 2, 1, 2);
+	mainLayout->addWidget(resultsGroup);
 
-	enableNoiseSuppressionCheck = new QCheckBox("Noise suppression", this);
-	enableNoiseGateCheck = new QCheckBox("Noise gate", this);
+	// Filters (collapsed into two horizontal rows)
+	basicFiltersGroup = new QGroupBox("Filters", this);
+	auto *filtersLayout = new QGridLayout(basicFiltersGroup);
+	filtersLayout->setSpacing(4);
+	filtersLayout->setContentsMargins(6, 4, 6, 4);
+
+	enableNoiseSuppressionCheck = new QCheckBox("Noise Supp", this);
+	enableNoiseGateCheck = new QCheckBox("Gate", this);
 	enableExpanderCheck = new QCheckBox("Expander", this);
 	enableGainCheck = new QCheckBox("Gain", this);
 	enableCompressorCheck = new QCheckBox("Compressor", this);
@@ -172,105 +216,77 @@ void CalibrationDialog::setupUI()
 	enableLimiterCheck->setChecked(true);
 
 	noiseSuppressionLevel = new QComboBox(this);
-	noiseSuppressionLevel->addItems({"Low (-15 dB)", "Medium (-25 dB)", "High (-35 dB)"});
+	noiseSuppressionLevel->addItems({"Low", "Med", "High"});
 	noiseSuppressionLevel->setCurrentIndex(1);
 
-	basicLayout->addWidget(enableNoiseSuppressionCheck, 0, 0);
-	basicLayout->addWidget(noiseSuppressionLevel, 0, 1);
-	basicLayout->addWidget(enableNoiseGateCheck, 1, 0);
-	basicLayout->addWidget(enableExpanderCheck, 2, 0);
-	basicLayout->addWidget(enableGainCheck, 3, 0);
-	basicLayout->addWidget(enableCompressorCheck, 4, 0);
-	basicLayout->addWidget(enableLimiterCheck, 5, 0);
+	filtersLayout->addWidget(enableNoiseSuppressionCheck, 0, 0);
+	filtersLayout->addWidget(noiseSuppressionLevel, 0, 1);
+	filtersLayout->addWidget(enableNoiseGateCheck, 0, 2);
+	filtersLayout->addWidget(enableExpanderCheck, 0, 3);
+	filtersLayout->addWidget(enableGainCheck, 1, 0);
+	filtersLayout->addWidget(enableCompressorCheck, 1, 1);
+	filtersLayout->addWidget(enableLimiterCheck, 1, 2);
 
 	mainLayout->addWidget(basicFiltersGroup);
 
-	advancedFiltersGroup = new QGroupBox("Filters (Advanced)", this);
+	// Advanced filters row
+	advancedFiltersGroup = new QGroupBox("Advanced", this);
 	auto *advLayout = new QGridLayout(advancedFiltersGroup);
+	advLayout->setSpacing(4);
+	advLayout->setContentsMargins(6, 4, 6, 4);
 
-	enableHighPassCheck = new QCheckBox("High-pass", this);
-	enableLowPassCheck = new QCheckBox("Low-pass", this);
-	enableDeEsserCheck = new QCheckBox("De-esser", this);
-	enableVSTCheck = new QCheckBox("VST plugin", this);
+	enableHighPassCheck = new QCheckBox("HPF", this);
+	enableLowPassCheck = new QCheckBox("LPF", this);
+	enableDeEsserCheck = new QCheckBox("De-ess", this);
+	enableVSTCheck = new QCheckBox("VST", this);
 
 	highPassFreq = new QComboBox(this);
-	highPassFreq->addItems({"80 Hz", "100 Hz", "120 Hz"});
+	highPassFreq->addItems({"80", "100", "120"});
 	highPassFreq->setCurrentIndex(0);
 
 	lowPassFreq = new QComboBox(this);
-	lowPassFreq->addItems({"12 kHz", "10 kHz", "8 kHz"});
+	lowPassFreq->addItems({"12k", "10k", "8k"});
 	lowPassFreq->setCurrentIndex(0);
 
 	deEsserIntensity = new QComboBox(this);
-	deEsserIntensity->addItems({"Light", "Medium", "Strong"});
+	deEsserIntensity->addItems({"Light", "Med", "Strong"});
 	deEsserIntensity->setCurrentIndex(1);
 
 	advLayout->addWidget(enableHighPassCheck, 0, 0);
 	advLayout->addWidget(highPassFreq, 0, 1);
-	advLayout->addWidget(enableLowPassCheck, 1, 0);
-	advLayout->addWidget(lowPassFreq, 1, 1);
-	advLayout->addWidget(enableDeEsserCheck, 2, 0);
-	advLayout->addWidget(deEsserIntensity, 2, 1);
-	advLayout->addWidget(enableVSTCheck, 3, 0);
+	advLayout->addWidget(enableLowPassCheck, 0, 2);
+	advLayout->addWidget(lowPassFreq, 0, 3);
+	advLayout->addWidget(enableDeEsserCheck, 0, 4);
+	advLayout->addWidget(deEsserIntensity, 0, 5);
+	advLayout->addWidget(enableVSTCheck, 0, 6);
 
 	mainLayout->addWidget(advancedFiltersGroup);
 
-	// Results
-	resultsGroup = new QGroupBox("Results", this);
-	auto *resultsLayout = new QGridLayout(resultsGroup);
-
-	auto makeResultLabel = [this](const QString &text) {
-		auto *label = new QLabel(text, this);
-		label->setMinimumWidth(240);
-		return label;
-	};
-
-	step1Result = makeResultLabel("1) —");
-	step2Result = makeResultLabel("2) —");
-	step3Result = makeResultLabel("3) —");
-	step4Result = makeResultLabel("4) —");
-	step5Result = makeResultLabel("5) —");
-	step6Result = makeResultLabel("6) —");
-	step7Result = makeResultLabel("7) —");
-	step8Result = makeResultLabel("8) —");
-	rangeResult = makeResultLabel("Range: —");
-	avgResult = makeResultLabel("Average: —");
-
-	resultsLayout->addWidget(step1Result, 0, 0);
-	resultsLayout->addWidget(step2Result, 1, 0);
-	resultsLayout->addWidget(step3Result, 2, 0);
-	resultsLayout->addWidget(step4Result, 3, 0);
-	resultsLayout->addWidget(step5Result, 0, 1);
-	resultsLayout->addWidget(step6Result, 1, 1);
-	resultsLayout->addWidget(step7Result, 2, 1);
-	resultsLayout->addWidget(step8Result, 3, 1);
-	resultsLayout->addWidget(rangeResult, 4, 0);
-	resultsLayout->addWidget(avgResult, 4, 1);
-
-	mainLayout->addWidget(resultsGroup);
-
-	// Status + buttons
+	// Status + Apply/Reset
 	statusLabel = new QLabel("Ready.");
 	statusLabel->setWordWrap(true);
 	mainLayout->addWidget(statusLabel);
 
 	auto *buttonsRow = new QHBoxLayout();
-	startButton = new QPushButton("Start");
-	connect(startButton, &QPushButton::clicked, this, &CalibrationDialog::onStartClicked);
-
-	applyButton = new QPushButton("Apply to source");
+	applyButton = new QPushButton("Apply Filters");
 	applyButton->setEnabled(false);
 	connect(applyButton, &QPushButton::clicked, this, &CalibrationDialog::onApplyClicked);
 
 	resetButton = new QPushButton("Reset");
 	connect(resetButton, &QPushButton::clicked, this, &CalibrationDialog::onResetClicked);
 
-	buttonsRow->addWidget(startButton);
 	buttonsRow->addWidget(applyButton);
 	buttonsRow->addStretch();
 	buttonsRow->addWidget(resetButton);
-
 	mainLayout->addLayout(buttonsRow);
+
+	// Hidden elements we don't use visually but keep for compatibility
+	titleLabel = new QLabel("", this);
+	titleLabel->hide();
+	instructionLabel = new QLabel("", this);
+	instructionLabel->hide();
+	meterGroup = new QGroupBox("", this);
+	meterGroup->hide();
 }
 
 void CalibrationDialog::setupStyles()
@@ -326,27 +342,46 @@ obs_source_t *CalibrationDialog::getSelectedSource()
 	return obs_get_source_by_name(name.toUtf8().constData());
 }
 
-void CalibrationDialog::onSourceChanged(int)
+void CalibrationDialog::onSourceChanged(int index)
 {
-	if (!audioAnalyzer)
+	obs_log(LOG_INFO, "[AudioCalibrator] onSourceChanged called, index=%d", index);
+	
+	if (!audioAnalyzer) {
+		obs_log(LOG_WARNING, "[AudioCalibrator] audioAnalyzer is null in onSourceChanged");
 		return;
+	}
 
 	obs_source_t *source = getSelectedSource();
 	if (!source) {
 		audioAnalyzer->stopCapture();
 		statusLabel->setText("Select a valid audio source.");
+		obs_log(LOG_INFO, "[AudioCalibrator] No valid source selected");
 		return;
 	}
 
-	audioAnalyzer->startCapture(source);
+	const char *srcName = obs_source_get_name(source);
+	obs_log(LOG_INFO, "[AudioCalibrator] Starting capture on source: %s", srcName ? srcName : "(null)");
+	
+	bool started = audioAnalyzer->startCapture(source);
 	obs_source_release(source);
-	statusLabel->setText("Capturing audio from selected source.");
+	
+	if (started) {
+		statusLabel->setText("Capturing audio.");
+		obs_log(LOG_INFO, "[AudioCalibrator] Capture started successfully, isCapturing=%d", 
+				audioAnalyzer->isCapturing() ? 1 : 0);
+	} else {
+		statusLabel->setText("Failed to start capture.");
+		obs_log(LOG_WARNING, "[AudioCalibrator] Failed to start capture");
+	}
 }
 
 void CalibrationDialog::onStartClicked()
 {
+	obs_log(LOG_INFO, "[AudioCalibrator] onStartClicked called, sourceCombo index=%d", sourceCombo->currentIndex());
+	
 	if (sourceCombo->currentIndex() <= 0) {
 		statusLabel->setText("Please select an audio source first.");
+		obs_log(LOG_INFO, "[AudioCalibrator] No source selected");
 		return;
 	}
 
@@ -365,13 +400,19 @@ void CalibrationDialog::onStartClicked()
 
 	updatePromptForStep();
 	updateResultsDisplay();
-	statusLabel->setText("Step 1 ready. Press Record when you are ready.");
+	statusLabel->setText("Step 1 ready. Press Record.");
+	obs_log(LOG_INFO, "[AudioCalibrator] Started calibration, currentStep=%d, recordButton enabled=%d", 
+			currentStep, recordButton->isEnabled());
 }
 
 void CalibrationDialog::onRecordClicked()
 {
+	obs_log(LOG_INFO, "[AudioCalibrator] onRecordClicked called, currentStep=%d, isRecording=%d", 
+			currentStep, isRecording ? 1 : 0);
+	
 	if (currentStep <= 0 || currentStep > TOTAL_STEPS) {
 		statusLabel->setText("Press Start to begin calibration.");
+		obs_log(LOG_INFO, "[AudioCalibrator] Invalid step, showing message");
 		return;
 	}
 
@@ -385,8 +426,17 @@ void CalibrationDialog::onRecordClicked()
 
 void CalibrationDialog::startRecording()
 {
-	if (!audioAnalyzer || !audioAnalyzer->isCapturing()) {
-		statusLabel->setText("Audio capture is not active. Select a source.");
+	obs_log(LOG_INFO, "[AudioCalibrator] startRecording called");
+	
+	if (!audioAnalyzer) {
+		statusLabel->setText("Audio analyzer not initialized.");
+		obs_log(LOG_WARNING, "[AudioCalibrator] audioAnalyzer is null!");
+		return;
+	}
+	
+	if (!audioAnalyzer->isCapturing()) {
+		statusLabel->setText("Audio capture not active. Select source and click Start.");
+		obs_log(LOG_WARNING, "[AudioCalibrator] audioAnalyzer not capturing!");
 		return;
 	}
 
@@ -394,7 +444,7 @@ void CalibrationDialog::startRecording()
 	recordButton->setText("Stop");
 
 	recordingElapsedMs = 0;
-	recordingFrames = 0; // reused as sample counter
+	recordingFrames = 0;
 	recordingProgress->setRange(0, RECORDING_DURATION_MS);
 	recordingProgress->setValue(0);
 
@@ -409,7 +459,8 @@ void CalibrationDialog::startRecording()
 	onRecordingTick();
 	recordingTimer->start(RECORDING_TICK_MS);
 
-	statusLabel->setText("Recording... speak the prompt naturally.");
+	statusLabel->setText("Recording... speak now.");
+	obs_log(LOG_INFO, "[AudioCalibrator] Recording started for step %d", currentStep);
 }
 
 void CalibrationDialog::stopRecording()
@@ -423,8 +474,8 @@ void CalibrationDialog::stopRecording()
 
 	saveCurrentLevel();
 	updateResultsDisplay();
-
 	advanceStep();
+	saveCalibrationData();  // Persist after step advances (so currentStep reflects completion)
 }
 
 void CalibrationDialog::saveCurrentLevel()
@@ -627,6 +678,14 @@ void CalibrationDialog::updateResultsDisplay()
 
 void CalibrationDialog::onApplyClicked()
 {
+	obs_log(LOG_INFO, "[AudioCalibrator] onApplyClicked called, currentStep=%d", currentStep);
+	
+	// Debug: print all levels
+	for (int i = 0; i < TOTAL_STEPS; i++) {
+		obs_log(LOG_INFO, "[AudioCalibrator] Step %d: level=%.2f dB, peak=%.2f dB", 
+				i + 1, levels[i], peaks[i]);
+	}
+	
 	if (currentStep <= TOTAL_STEPS) {
 		statusLabel->setText("Finish all steps before applying.");
 		return;
@@ -638,9 +697,13 @@ void CalibrationDialog::onApplyClicked()
 		return;
 	}
 
-	for (int i = 0; i < TOTAL_STEPS; i++) {
+	// Validate: steps 2-8 must have valid data (step 1 = noise floor, can be very quiet)
+	// We only require steps 2-8 to have measurable levels
+	for (int i = 1; i < TOTAL_STEPS; i++) {
 		if (levels[i] <= -99.0f) {
-			statusLabel->setText("Calibration data incomplete. Please rerun and complete all steps.");
+			obs_log(LOG_WARNING, "[AudioCalibrator] Validation failed for step %d: level=%.2f", 
+					i + 1, levels[i]);
+			statusLabel->setText(QString("Step %1 has no data. Please rerun calibration.").arg(i + 1));
 			obs_source_release(source);
 			return;
 		}
@@ -654,6 +717,13 @@ void CalibrationDialog::onApplyClicked()
 	const float avgProgram = (normal + steady + energetic) / 3.0f;
 	const float loudPeak = std::max({peaks[3], peaks[4], peaks[5]});
 	const float dynamic = energetic - normal;
+
+	obs_log(LOG_INFO, "[AudioCalibrator] Calibration results:");
+	obs_log(LOG_INFO, "[AudioCalibrator]   Noise floor (step 1): %.1f dB", noiseFloor);
+	obs_log(LOG_INFO, "[AudioCalibrator]   Normal voice (step 4): %.1f dB", normal);
+	obs_log(LOG_INFO, "[AudioCalibrator]   Steady voice (step 5): %.1f dB", steady);
+	obs_log(LOG_INFO, "[AudioCalibrator]   Energetic (step 6): %.1f dB", energetic);
+	obs_log(LOG_INFO, "[AudioCalibrator]   Avg program: %.1f dB, dynamic range: %.1f dB", avgProgram, dynamic);
 
 	// Target a stable RMS around -18 dB for OBS meters
 	const float targetRms = -18.0f;
@@ -673,12 +743,14 @@ void CalibrationDialog::onApplyClicked()
 
 	// Compressor threshold: slightly under program RMS
 	float thresholdDb = clampf(avgProgram - 5.0f, -45.0f, -10.0f);
-	(void)noiseFloor;
+
+	obs_log(LOG_INFO, "[AudioCalibrator] Applying: gain=%.1f dB, threshold=%.1f dB, ratio=%.1f:1",
+			gainDb, thresholdDb, ratio);
 
 	applyFilters(gainDb, thresholdDb, ratio);
 
 	obs_source_release(source);
-	statusLabel->setText("Filters applied to selected source.");
+	statusLabel->setText("Filters applied successfully!");
 }
 
 void CalibrationDialog::onResetClicked()
@@ -894,4 +966,104 @@ void CalibrationDialog::applyFilters(float gain, float threshold, float ratio)
 	}
 
 	obs_source_release(source);
+}
+
+QString CalibrationDialog::getCalibrationFilePath()
+{
+	QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+	QDir dir(appData);
+	if (!dir.exists())
+		dir.mkpath(".");
+	return dir.filePath("audio_calibration.json");
+}
+
+void CalibrationDialog::saveCalibrationData()
+{
+	QJsonObject root;
+	
+	QJsonArray levelsArray;
+	for (int i = 0; i < TOTAL_STEPS; i++)
+		levelsArray.append(static_cast<double>(levels[i]));
+	root["levels"] = levelsArray;
+	
+	QJsonArray peaksArray;
+	for (int i = 0; i < TOTAL_STEPS; i++)
+		peaksArray.append(static_cast<double>(peaks[i]));
+	root["peaks"] = peaksArray;
+	
+	root["currentStep"] = currentStep;
+	root["version"] = "1.0.1";
+	
+	QFile file(getCalibrationFilePath());
+	if (file.open(QIODevice::WriteOnly)) {
+		file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
+		file.close();
+		obs_log(LOG_INFO, "[AudioCalibrator] Saved calibration data to %s", 
+				getCalibrationFilePath().toUtf8().constData());
+	}
+}
+
+void CalibrationDialog::loadCalibrationData()
+{
+	QFile file(getCalibrationFilePath());
+	if (!file.exists()) {
+		obs_log(LOG_INFO, "[AudioCalibrator] No saved calibration data found");
+		return;
+	}
+	
+	if (!file.open(QIODevice::ReadOnly)) {
+		obs_log(LOG_WARNING, "[AudioCalibrator] Failed to open calibration file");
+		return;
+	}
+	
+	QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+	file.close();
+	
+	if (!doc.isObject()) {
+		obs_log(LOG_WARNING, "[AudioCalibrator] Invalid calibration file format");
+		return;
+	}
+	
+	QJsonObject root = doc.object();
+	
+	if (root.contains("levels") && root["levels"].isArray()) {
+		QJsonArray arr = root["levels"].toArray();
+		for (int i = 0; i < TOTAL_STEPS && i < arr.size(); i++) {
+			levels[i] = static_cast<float>(arr[i].toDouble(-100.0));
+			obs_log(LOG_INFO, "[AudioCalibrator] Loaded level[%d] = %.2f dB", i, levels[i]);
+		}
+	}
+	
+	if (root.contains("peaks") && root["peaks"].isArray()) {
+		QJsonArray arr = root["peaks"].toArray();
+		for (int i = 0; i < TOTAL_STEPS && i < arr.size(); i++) {
+			peaks[i] = static_cast<float>(arr[i].toDouble(-100.0));
+			obs_log(LOG_INFO, "[AudioCalibrator] Loaded peak[%d] = %.2f dB", i, peaks[i]);
+		}
+	}
+	
+	if (root.contains("currentStep")) {
+		int savedStep = root["currentStep"].toInt(0);
+		if (savedStep > TOTAL_STEPS) {
+			// Calibration was complete - allow Apply
+			currentStep = TOTAL_STEPS + 1;
+			startButton->setEnabled(false);
+			recordButton->setEnabled(false);
+			applyButton->setEnabled(true);
+			stepIndicatorLabel->setText("Complete");
+			promptLabel->setText("Previous calibration loaded. Click Apply or Reset.");
+			statusLabel->setText("Loaded saved calibration. Ready to Apply.");
+		} else if (savedStep > 0) {
+			// Partial calibration
+			currentStep = savedStep;
+			startButton->setEnabled(false);
+			recordButton->setEnabled(true);
+			applyButton->setEnabled(false);
+			updatePromptForStep();
+			statusLabel->setText(QString("Resumed at step %1.").arg(currentStep));
+		}
+	}
+	
+	updateResultsDisplay();
+	obs_log(LOG_INFO, "[AudioCalibrator] Loaded calibration data (step %d)", currentStep);
 }

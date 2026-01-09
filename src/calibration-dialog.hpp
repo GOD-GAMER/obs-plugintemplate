@@ -61,6 +61,11 @@ private:
     bool createFilter(obs_source_t* source, const char* filterId, 
                      const char* filterName, obs_data_t* settings);
     bool isFilterAvailable(const char* filterId);
+    
+    // Persistence
+    void saveCalibrationData();
+    void loadCalibrationData();
+    QString getCalibrationFilePath();
 
     // UI Elements - Top Section (Recording) - PROMINENT
     QFrame *recordingFrame;
